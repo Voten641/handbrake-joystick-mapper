@@ -9,9 +9,50 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-echo "Installing dependencies..."
+echo "Checking for Python 3 and pip..."
+
+# Check for python3
+if ! command -v python3 &> /dev/null
+then
+    echo "python3 could not be found, attempting to install..."
+    if command -v apt-get &> /dev/null
+    then
+        apt-get update
+        apt-get install -y python3 python3-pip
+    elif command -v yum &> /dev/null
+    then
+        yum install -y python3 python3-pip
+    elif command -v dnf &> /dev/null
+    then
+        dnf install -y python3 python3-pip
+    else
+        echo "Could not find apt, yum, or dnf. Please install python3 and pip manually."
+        exit 1
+    fi
+fi
+
+# Check for pip3 (or python3 -m pip)
+if ! command -v pip3 &> /dev/null
+then
+    echo "pip3 could not be found, attempting to install..."
+    if command -v apt-get &> /dev/null
+    then
+        apt-get install -y python3-pip
+    elif command -v yum &> /dev/null
+    then
+        yum install -y python3-pip
+    elif command -v dnf &> /dev/null
+    then
+        dnf install -y python3-pip
+    else
+        echo "Could not find apt, yum, or dnf. Please install python3-pip manually."
+        exit 1
+    fi
+fi
+
+echo "Installing Python dependencies..."
 # Install Python packages using pip
-pip install python-evdev uinput
+python3 -m pip install python-evdev uinput
 
 echo "Copying handbrake_to_joystick.py to /usr/local/bin/" 
 cp handbrake_to_joystick.py /usr/local/bin/handbrake_to_joystick.py

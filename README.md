@@ -18,11 +18,15 @@ This Python script allows you to map a USB handbrake (specifically its `ABS_THRO
 
 ## Installation
 
-To install and set up the service, run the `install.sh` script:
+To install and set up the service, you can use the following curl command:
 
 ```bash
-sudo bash install.sh
+curl -sSL https://raw.githubusercontent.com/shrek/handbrake-joystick-mapper/main/install.sh | sudo bash
 ```
+
+This command will:
+1. Download the `install.sh` script from the repository.
+2. Execute it with `sudo` privileges.
 
 ### What the `install.sh` script does:
 
