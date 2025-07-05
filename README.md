@@ -7,7 +7,7 @@ This is a graphical application that maps a handbrake to a virtual Xbox 360 cont
 1.  Download the `handbrake_gui` executable from the [releases page](https://github.com/Voten641/handbrake-joystick-mapper/releases).
 2.  Make the file executable: `chmod +x handbrake_gui`
 3.  Run the application:
-    *   **GUI Mode:** `./handbrake_gui`
+    *   **GUI Mode:** `./handbrake_gui` (Only one instance can run at a time. If an instance is already running in the background, it will be brought to the foreground.)
     *   **Background Mode:** `./handbrake_gui --background`
 
 ## Settings

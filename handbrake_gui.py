@@ -10,9 +10,11 @@ import os
 import json
 import sys
 import argparse
+import socket
 
 # --- Configuration ---
 CONFIG_FILE = os.path.expanduser("~/.handbrake_mapper_config.json")
+SINGLE_INSTANCE_PORT = 12345  # Port for single instance communication
 ABS_THROTTLE_MAX = 32767
 CLOSE_TO_BACKGROUND = False
 
@@ -20,6 +22,7 @@ CLOSE_TO_BACKGROUND = False
 handbrake_device = None
 virtual_device = None
 running = False
+app_instance = None # Reference to the main application instance
 
 def load_config():
     global ABS_THROTTLE_MAX, CLOSE_TO_BACKGROUND
@@ -32,6 +35,34 @@ def load_config():
 def save_config():
     with open(CONFIG_FILE, 'w') as f:
         json.dump({"ABS_THROTTLE_MAX": ABS_THROTTLE_MAX, "CLOSE_TO_BACKGROUND": CLOSE_TO_BACKGROUND}, f)
+
+def check_single_instance(root):
+    global app_instance
+    try:
+        # Try to connect to an existing instance
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect(('127.0.0.1', SINGLE_INSTANCE_PORT))
+        s.sendall(b'show')
+        s.close()
+        sys.exit()  # Exit if another instance is already running
+    except ConnectionRefusedError:
+        # No other instance running, so this becomes the primary instance
+        app_instance = HandbrakeApp(root)
+        threading.Thread(target=start_single_instance_server, args=(root,), daemon=True).start()
+
+def start_single_instance_server(root):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(('127.0.0.1', SINGLE_INSTANCE_PORT))
+    s.listen(1)
+    while True:
+        conn, addr = s.accept()
+        data = conn.recv(1024)
+        if data == b'show':
+            root.deiconify()  # Show the window
+            root.lift()
+            root.attributes('-topmost', True)
+            root.attributes('-topmost', False)
+        conn.close()
 
 def find_handbrake_device():
     devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
@@ -298,5 +329,6 @@ if __name__ == "__main__":
         handbrake_mapping_loop()
     else:
         root = tk.Tk()
-        app = HandbrakeApp(root)
+        root.withdraw() # Hide the main window initially
+        check_single_instance(root)
         root.mainloop()
