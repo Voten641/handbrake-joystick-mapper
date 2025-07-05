@@ -15,8 +15,11 @@ This is a graphical application that maps a handbrake to a virtual Xbox 360 cont
 The application includes a settings menu where you can:
 
 *   Adjust the `ABS_THROTTLE_MAX` value to calibrate your handbrake.
-*   Enable/disable autostart with the system. When autostart is enabled, the application will run in background mode.
 *   Enable/disable "Close to background" mode. When enabled, clicking the close button will hide the window instead of exiting the application.
+
+## Contributing
+
+If you'd like to contribute to this project, especially to fix or improve the autostart functionality, please feel free to submit a pull request!
 
 ## Building from Source
 

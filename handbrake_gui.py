@@ -11,6 +11,7 @@ import json
 import sys
 import argparse
 import socket
+import subprocess
 
 # --- Configuration ---
 CONFIG_FILE = os.path.expanduser("~/.handbrake_mapper_config.json")
@@ -48,6 +49,8 @@ def check_single_instance(root):
     except ConnectionRefusedError:
         # No other instance running, so this becomes the primary instance
         app_instance = HandbrakeApp(root)
+        if CLOSE_TO_BACKGROUND:
+            root.withdraw()
         threading.Thread(target=start_single_instance_server, args=(root,), daemon=True).start()
 
 def start_single_instance_server(root):
@@ -150,14 +153,22 @@ def handbrake_mapping_loop(status_callback=None, value_callback=None):
 
 # --- GUI ---
 class SettingsWindow(tk.Toplevel):
-    def __init__(self, parent):
+    def __init__(self, parent, app_instance):
         super().__init__(parent)
         self.title("Settings")
         self.geometry("400x200")
 
+        self.parent = parent
+        self.app_instance = app_instance
+
         self.throttle_max_var = tk.IntVar(value=ABS_THROTTLE_MAX)
         self.autostart_var = tk.BooleanVar(value=self.is_autostart_enabled())
         self.close_to_background_var = tk.BooleanVar(value=CLOSE_TO_BACKGROUND)
+
+        # Store initial values to check for changes
+        self._initial_throttle_max = ABS_THROTTLE_MAX
+        self._initial_autostart = self.is_autostart_enabled()
+        self._initial_close_to_background = CLOSE_TO_BACKGROUND
 
         main_frame = ttk.Frame(self, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -171,7 +182,7 @@ class SettingsWindow(tk.Toplevel):
         autostart_frame = ttk.LabelFrame(main_frame, text="Application Settings", padding="10")
         autostart_frame.pack(fill=tk.X, pady=5)
 
-        ttk.Checkbutton(autostart_frame, text="Start with system", variable=self.autostart_var).pack(side=tk.LEFT, padx=5)
+        # ttk.Checkbutton(autostart_frame, text="Start with system", variable=self.autostart_var).pack(side=tk.LEFT, padx=5)
         self.close_to_background_checkbox = ttk.Checkbutton(autostart_frame, text="Close to background", variable=self.close_to_background_var)
         self.close_to_background_checkbox.pack(side=tk.LEFT, padx=5)
 
@@ -182,14 +193,31 @@ class SettingsWindow(tk.Toplevel):
         ttk.Button(button_frame, text="Cancel", command=self.destroy).pack(side=tk.LEFT, padx=5)
 
     def save_settings(self):
-        global ABS_THROTTLE_MAX
+        global ABS_THROTTLE_MAX, CLOSE_TO_BACKGROUND
         try:
-            ABS_THROTTLE_MAX = self.throttle_max_var.get()
-            global CLOSE_TO_BACKGROUND
-            CLOSE_TO_BACKGROUND = self.close_to_background_var.get()
-            save_config()
-            self.handle_autostart()
-            messagebox.showinfo("Settings Saved", "Your settings have been saved.")
+            new_throttle_max = self.throttle_max_var.get()
+            new_autostart = self.autostart_var.get()
+            new_close_to_background = self.close_to_background_var.get()
+
+            settings_changed = False
+            if new_throttle_max != self._initial_throttle_max:
+                ABS_THROTTLE_MAX = new_throttle_max
+                self.app_instance.progress.config(maximum=ABS_THROTTLE_MAX)
+                settings_changed = True
+            
+            if new_close_to_background != self._initial_close_to_background:
+                CLOSE_TO_BACKGROUND = new_close_to_background
+                settings_changed = True
+
+            if new_autostart != self._initial_autostart:
+                self.handle_autostart()
+                settings_changed = True
+
+            if settings_changed:
+                save_config()
+                messagebox.showinfo("Settings Saved", "Your settings have been saved.")
+            else:
+                messagebox.showinfo("No Changes", "No settings were changed.")
             self.destroy()
         except tk.TclError:
             messagebox.showerror("Invalid Input", "Please enter a valid number for the max throttle value.")
@@ -204,6 +232,11 @@ class SettingsWindow(tk.Toplevel):
             self.disable_autostart()
 
     def enable_autostart(self):
+        if os.geteuid() != 0:
+            messagebox.showerror("Permission Denied", "Please run the application with sudo to enable autostart.")
+            self.autostart_var.set(False) # Revert checkbox state
+            return
+
         service_content = f"""[Unit]
 Description=Handbrake Joystick Mapper Background Service
 After=network.target
@@ -219,18 +252,23 @@ WantedBy=multi-user.target
         try:
             with open("/tmp/handbrake_mapper.service", "w") as f:
                 f.write(service_content)
-            os.system("sudo mv /tmp/handbrake_mapper.service /etc/systemd/system/handbrake_mapper.service")
-            os.system("sudo systemctl enable handbrake_mapper.service")
-            os.system("sudo systemctl start handbrake_mapper.service")
+            subprocess.run(["mv", "/tmp/handbrake_mapper.service", "/etc/systemd/system/handbrake_mapper.service"], check=True)
+            subprocess.run(["systemctl", "enable", "handbrake_mapper.service"], check=True)
+            subprocess.run(["systemctl", "start", "handbrake_mapper.service"], check=True)
             messagebox.showinfo("Autostart Enabled", "The application will now start automatically with the system.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to enable autostart: {e}")
 
     def disable_autostart(self):
+        if os.geteuid() != 0:
+            messagebox.showerror("Permission Denied", "Please run the application with sudo to disable autostart.")
+            self.autostart_var.set(True) # Revert checkbox state
+            return
+
         try:
-            os.system("sudo systemctl stop handbrake_mapper.service")
-            os.system("sudo systemctl disable handbrake_mapper.service")
-            os.system("sudo rm /etc/systemd/system/handbrake_mapper.service")
+            subprocess.run(["systemctl", "stop", "handbrake_mapper.service"], check=True)
+            subprocess.run(["systemctl", "disable", "handbrake_mapper.service"], check=True)
+            subprocess.run(["rm", "/etc/systemd/system/handbrake_mapper.service"], check=True)
             messagebox.showinfo("Autostart Disabled", "The application will no longer start automatically with the system.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to disable autostart: {e}")
@@ -285,7 +323,7 @@ class HandbrakeApp:
         root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def open_settings(self):
-        SettingsWindow(self.root)
+        SettingsWindow(self.root, self)
 
     def update_status(self, message):
         self.root.after(0, self.status_var.set, message)
@@ -329,6 +367,5 @@ if __name__ == "__main__":
         handbrake_mapping_loop()
     else:
         root = tk.Tk()
-        root.withdraw() # Hide the main window initially
         check_single_instance(root)
         root.mainloop()
