@@ -15,7 +15,12 @@ This is a graphical application that maps a handbrake to a virtual Xbox 360 cont
 The application includes a settings menu where you can:
 
 *   Adjust the `ABS_THROTTLE_MAX` value to calibrate your handbrake.
+*   Enable/disable autostart with the system. **Note: Managing autostart requires `sudo` authentication.**
 *   Enable/disable "Close to background" mode. When enabled, clicking the close button will hide the window instead of exiting the application.
+
+## Automated Setup
+
+The application can automate the setup of udev rules and permissions. This requires `sudo` authentication.
 
 ## Contributing
 

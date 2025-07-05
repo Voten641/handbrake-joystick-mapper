@@ -49,7 +49,7 @@ def check_single_instance(root):
     except ConnectionRefusedError:
         # No other instance running, so this becomes the primary instance
         app_instance = HandbrakeApp(root)
-        if CLOSE_TO_BACKGROUND:
+        if CLOSE_TO_BACKGROUND and not args.background: # Only withdraw if not in background mode and close to background is enabled
             root.withdraw()
         threading.Thread(target=start_single_instance_server, args=(root,), daemon=True).start()
 
@@ -182,7 +182,7 @@ class SettingsWindow(tk.Toplevel):
         autostart_frame = ttk.LabelFrame(main_frame, text="Application Settings", padding="10")
         autostart_frame.pack(fill=tk.X, pady=5)
 
-        # ttk.Checkbutton(autostart_frame, text="Start with system", variable=self.autostart_var).pack(side=tk.LEFT, padx=5)
+        ttk.Checkbutton(autostart_frame, text="Start with system", variable=self.autostart_var).pack(side=tk.LEFT, padx=5)
         self.close_to_background_checkbox = ttk.Checkbutton(autostart_frame, text="Close to background", variable=self.close_to_background_var)
         self.close_to_background_checkbox.pack(side=tk.LEFT, padx=5)
 
@@ -191,6 +191,7 @@ class SettingsWindow(tk.Toplevel):
 
         ttk.Button(button_frame, text="Save", command=self.save_settings).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Cancel", command=self.destroy).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Automate Setup", command=self.automate_setup).pack(side=tk.LEFT, padx=5)
 
     def save_settings(self):
         global ABS_THROTTLE_MAX, CLOSE_TO_BACKGROUND
@@ -232,11 +233,6 @@ class SettingsWindow(tk.Toplevel):
             self.disable_autostart()
 
     def enable_autostart(self):
-        if os.geteuid() != 0:
-            messagebox.showerror("Permission Denied", "Please run the application with sudo to enable autostart.")
-            self.autostart_var.set(False) # Revert checkbox state
-            return
-
         service_content = f"""[Unit]
 Description=Handbrake Joystick Mapper Background Service
 After=network.target
@@ -252,26 +248,46 @@ WantedBy=multi-user.target
         try:
             with open("/tmp/handbrake_mapper.service", "w") as f:
                 f.write(service_content)
-            subprocess.run(["mv", "/tmp/handbrake_mapper.service", "/etc/systemd/system/handbrake_mapper.service"], check=True)
-            subprocess.run(["systemctl", "enable", "handbrake_mapper.service"], check=True)
-            subprocess.run(["systemctl", "start", "handbrake_mapper.service"], check=True)
+            subprocess.run(["sudo", "mv", "/tmp/handbrake_mapper.service", "/etc/systemd/system/handbrake_mapper.service"], check=True, capture_output=True, text=True)
+            subprocess.run(["sudo", "systemctl", "enable", "handbrake_mapper.service"], check=True, capture_output=True, text=True)
+            subprocess.run(["sudo", "systemctl", "start", "handbrake_mapper.service"], check=True, capture_output=True, text=True)
             messagebox.showinfo("Autostart Enabled", "The application will now start automatically with the system.")
+        except subprocess.CalledProcessError as e:
+            messagebox.showerror("Error", f"Failed to enable autostart. Error: {e.stderr}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to enable autostart: {e}")
 
     def disable_autostart(self):
-        if os.geteuid() != 0:
-            messagebox.showerror("Permission Denied", "Please run the application with sudo to disable autostart.")
-            self.autostart_var.set(True) # Revert checkbox state
-            return
-
         try:
-            subprocess.run(["systemctl", "stop", "handbrake_mapper.service"], check=True)
-            subprocess.run(["systemctl", "disable", "handbrake_mapper.service"], check=True)
-            subprocess.run(["rm", "/etc/systemd/system/handbrake_mapper.service"], check=True)
+            subprocess.run(["sudo", "systemctl", "stop", "handbrake_mapper.service"], check=True, capture_output=True, text=True)
+            subprocess.run(["sudo", "systemctl", "disable", "handbrake_mapper.service"], check=True, capture_output=True, text=True)
+            subprocess.run(["sudo", "rm", "/etc/systemd/system/handbrake_mapper.service"], check=True, capture_output=True, text=True)
             messagebox.showinfo("Autostart Disabled", "The application will no longer start automatically with the system.")
+        except subprocess.CalledProcessError as e:
+            messagebox.showerror("Error", f"Failed to disable autostart. Error: {e.stderr}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to disable autostart: {e}")
+
+    def automate_setup(self):
+        try:
+            # Step 2: Add udev rules
+            udev_rule_content = 'SUBSYSTEM=="usb", ENV{ID_VENDOR_ID}=="1021", ENV{ID_MODEL_ID}=="1888", RUN+="/bin/sh -c \'echo 1021 1888 > /sys/bus/usb/drivers/usbhid/new_id\'"'
+            with open("/tmp/handbrake_mapper_udev.rules", "w") as f:
+                f.write(udev_rule_content)
+            subprocess.run(["sudo", "mv", "/tmp/handbrake_mapper_udev.rules", "/etc/udev/rules.d/99-handbrake.rules"], check=True, capture_output=True, text=True)
+            subprocess.run(["sudo", "udevadm", "control", "--reload-rules"], check=True, capture_output=True, text=True)
+            subprocess.run(["sudo", "udevadm", "trigger"], check=True, capture_output=True, text=True)
+            messagebox.showinfo("Udev Rules", "Udev rules applied successfully. You may need to replug your handbrake.")
+
+            # Step 3: Fix permissions
+            current_user = os.getlogin()
+            subprocess.run(["sudo", "usermod", "-aG", "input", current_user], check=True, capture_output=True, text=True)
+            messagebox.showinfo("Permissions", "Permissions fixed successfully. Please log out and log back in for changes to take effect.")
+
+        except subprocess.CalledProcessError as e:
+            messagebox.showerror("Error", f"Failed to automate setup. Error: {e.stderr}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to automate setup: {e}")
 
 
 class HandbrakeApp:
