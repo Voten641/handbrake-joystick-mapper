@@ -14,6 +14,7 @@ import argparse
 # --- Configuration ---
 CONFIG_FILE = os.path.expanduser("~/.handbrake_mapper_config.json")
 ABS_THROTTLE_MAX = 32767
+CLOSE_TO_BACKGROUND = False
 
 # --- Global State for Handbrake Logic ---
 handbrake_device = None
@@ -21,15 +22,16 @@ virtual_device = None
 running = False
 
 def load_config():
-    global ABS_THROTTLE_MAX
+    global ABS_THROTTLE_MAX, CLOSE_TO_BACKGROUND
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'r') as f:
             config = json.load(f)
             ABS_THROTTLE_MAX = config.get("ABS_THROTTLE_MAX", 32767)
+            CLOSE_TO_BACKGROUND = config.get("CLOSE_TO_BACKGROUND", False)
 
 def save_config():
     with open(CONFIG_FILE, 'w') as f:
-        json.dump({"ABS_THROTTLE_MAX": ABS_THROTTLE_MAX}, f)
+        json.dump({"ABS_THROTTLE_MAX": ABS_THROTTLE_MAX, "CLOSE_TO_BACKGROUND": CLOSE_TO_BACKGROUND}, f)
 
 def find_handbrake_device():
     devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
@@ -124,6 +126,7 @@ class SettingsWindow(tk.Toplevel):
 
         self.throttle_max_var = tk.IntVar(value=ABS_THROTTLE_MAX)
         self.autostart_var = tk.BooleanVar(value=self.is_autostart_enabled())
+        self.close_to_background_var = tk.BooleanVar(value=CLOSE_TO_BACKGROUND)
 
         main_frame = ttk.Frame(self, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -138,6 +141,8 @@ class SettingsWindow(tk.Toplevel):
         autostart_frame.pack(fill=tk.X, pady=5)
 
         ttk.Checkbutton(autostart_frame, text="Start with system", variable=self.autostart_var).pack(side=tk.LEFT, padx=5)
+        self.close_to_background_checkbox = ttk.Checkbutton(autostart_frame, text="Close to background", variable=self.close_to_background_var)
+        self.close_to_background_checkbox.pack(side=tk.LEFT, padx=5)
 
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(pady=10)
@@ -149,6 +154,7 @@ class SettingsWindow(tk.Toplevel):
         global ABS_THROTTLE_MAX
         try:
             ABS_THROTTLE_MAX = self.throttle_max_var.get()
+            CLOSE_TO_BACKGROUND = self.close_to_background_var.get()
             save_config()
             self.handle_autostart()
             messagebox.showinfo("Settings Saved", "Your settings have been saved.")
@@ -274,8 +280,11 @@ class HandbrakeApp:
             self.update_value(0)
 
     def on_closing(self):
-        self.stop_mapping()
-        self.root.destroy()
+        if CLOSE_TO_BACKGROUND:
+            self.root.withdraw()  # Hide the window
+        else:
+            self.stop_mapping()
+            self.root.destroy()
 
 if __name__ == "__main__":
     load_config()

@@ -16,6 +16,7 @@ The application includes a settings menu where you can:
 
 *   Adjust the `ABS_THROTTLE_MAX` value to calibrate your handbrake.
 *   Enable/disable autostart with the system. When autostart is enabled, the application will run in background mode.
+*   Enable/disable "Close to background" mode. When enabled, clicking the close button will hide the window instead of exiting the application.
 
 ## Building from Source
 
