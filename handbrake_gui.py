@@ -154,6 +154,7 @@ class SettingsWindow(tk.Toplevel):
         global ABS_THROTTLE_MAX
         try:
             ABS_THROTTLE_MAX = self.throttle_max_var.get()
+            global CLOSE_TO_BACKGROUND
             CLOSE_TO_BACKGROUND = self.close_to_background_var.get()
             save_config()
             self.handle_autostart()
