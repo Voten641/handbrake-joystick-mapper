@@ -1,4 +1,3 @@
-
 import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
@@ -12,10 +11,12 @@ import sys
 import argparse
 import socket
 import subprocess
+import shutil
+import shlex # Added for safe shell quoting
 
 # --- Configuration ---
 CONFIG_FILE = os.path.expanduser("~/.handbrake_mapper_config.json")
-SINGLE_INSTANCE_PORT = 12345  # Port for single instance communication
+SINGLE_INSTANCE_PORT = 12345
 ABS_THROTTLE_MAX = 32767
 CLOSE_TO_BACKGROUND = False
 
@@ -23,15 +24,18 @@ CLOSE_TO_BACKGROUND = False
 handbrake_device = None
 virtual_device = None
 running = False
-app_instance = None # Reference to the main application instance
+app_instance = None
 
 def load_config():
     global ABS_THROTTLE_MAX, CLOSE_TO_BACKGROUND
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            config = json.load(f)
-            ABS_THROTTLE_MAX = config.get("ABS_THROTTLE_MAX", 32767)
-            CLOSE_TO_BACKGROUND = config.get("CLOSE_TO_BACKGROUND", False)
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+                ABS_THROTTLE_MAX = config.get("ABS_THROTTLE_MAX", 32767)
+                CLOSE_TO_BACKGROUND = config.get("CLOSE_TO_BACKGROUND", False)
+        except json.JSONDecodeError:
+            pass
 
 def save_config():
     with open(CONFIG_FILE, 'w') as f:
@@ -40,32 +44,37 @@ def save_config():
 def check_single_instance(root):
     global app_instance
     try:
-        # Try to connect to an existing instance
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.connect(('127.0.0.1', SINGLE_INSTANCE_PORT))
         s.sendall(b'show')
         s.close()
-        sys.exit()  # Exit if another instance is already running
+        sys.exit()
     except ConnectionRefusedError:
-        # No other instance running, so this becomes the primary instance
         app_instance = HandbrakeApp(root)
-        if CLOSE_TO_BACKGROUND and not args.background: # Only withdraw if not in background mode and close to background is enabled
+        if CLOSE_TO_BACKGROUND and not args.background: 
             root.withdraw()
         threading.Thread(target=start_single_instance_server, args=(root,), daemon=True).start()
 
 def start_single_instance_server(root):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(('127.0.0.1', SINGLE_INSTANCE_PORT))
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind(('127.0.0.1', SINGLE_INSTANCE_PORT))
+    except OSError:
+        return
     s.listen(1)
     while True:
-        conn, addr = s.accept()
-        data = conn.recv(1024)
-        if data == b'show':
-            root.deiconify()  # Show the window
-            root.lift()
-            root.attributes('-topmost', True)
-            root.attributes('-topmost', False)
-        conn.close()
+        try:
+            conn, addr = s.accept()
+            data = conn.recv(1024)
+            if data == b'show':
+                root.deiconify()
+                root.lift()
+                root.attributes('-topmost', True)
+                root.attributes('-topmost', False)
+            conn.close()
+        except OSError:
+            break
 
 def find_handbrake_device():
     devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
@@ -83,7 +92,10 @@ def cleanup_devices():
             pass
         handbrake_device = None
     if virtual_device:
-        virtual_device.destroy()
+        try:
+            virtual_device.destroy()
+        except Exception:
+            pass
         virtual_device = None
 
 def handbrake_mapping_loop(status_callback=None, value_callback=None):
@@ -100,7 +112,13 @@ def handbrake_mapping_loop(status_callback=None, value_callback=None):
                     continue
 
                 if status_callback: status_callback(f"Found: {handbrake_device.name}")
-                handbrake_device.grab()
+                try:
+                    handbrake_device.grab()
+                except IOError:
+                    if status_callback: status_callback("Permission denied. Could not grab device.")
+                    time.sleep(2)
+                    continue
+                
                 if status_callback: status_callback("Handbrake grabbed.")
 
                 if virtual_device is None:
@@ -131,7 +149,8 @@ def handbrake_mapping_loop(status_callback=None, value_callback=None):
                 if not running:
                     break
                 if event.type == ecodes.EV_ABS and event.code == ecodes.ABS_THROTTLE:
-                    mapped_value = int((event.value / ABS_THROTTLE_MAX) * 32767)
+                    max_val = ABS_THROTTLE_MAX if ABS_THROTTLE_MAX > 0 else 1
+                    mapped_value = int((event.value / max_val) * 32767)
                     if virtual_device:
                         virtual_device.emit(uinput.ABS_X, mapped_value, syn=True)
                     if value_callback: value_callback(event.value)
@@ -141,7 +160,7 @@ def handbrake_mapping_loop(status_callback=None, value_callback=None):
             cleanup_devices()
             time.sleep(2)
         except PermissionError:
-            if status_callback: status_callback("Permission denied. Run with sudo.")
+            if status_callback: status_callback("Permission denied. Run with sudo or fix permissions in Settings.")
             running = False
         except Exception as e:
             if status_callback: status_callback(f"An error occurred: {e}")
@@ -151,7 +170,101 @@ def handbrake_mapping_loop(status_callback=None, value_callback=None):
     cleanup_devices()
     if status_callback: status_callback("Stopped.")
 
+
+# --- Helper Functions for Sudo ---
+
+class SudoPasswordDialog(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Authentication Required")
+        self.geometry("350x150")
+        self.resizable(False, False)
+        self.result = None
+        
+        self.transient(parent)
+        self.grab_set()
+        
+        frame = ttk.Frame(self, padding="20")
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(frame, text="Enter your password to perform administrative tasks:").pack(pady=(0, 10))
+        
+        self.password_var = tk.StringVar()
+        entry = ttk.Entry(frame, textvariable=self.password_var, show="*", width=30)
+        entry.pack(pady=(0, 10))
+        entry.focus_set()
+        entry.bind('<Return>', lambda e: self.ok())
+        
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(pady=5)
+        
+        ttk.Button(btn_frame, text="OK", command=self.ok).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=self.cancel).pack(side=tk.LEFT, padx=5)
+        
+        self.protocol("WM_DELETE_WINDOW", self.cancel)
+        self.wait_window(self)
+        
+    def ok(self):
+        self.result = self.password_var.get()
+        self.destroy()
+        
+    def cancel(self):
+        self.result = None
+        self.destroy()
+
+def run_commands_as_root(commands):
+    """
+    Runs a list of commands in a single root shell session to avoid multiple password prompts.
+    commands: list of lists, e.g. [['mv', 'src', 'dst'], ['systemctl', 'start', 'x']]
+    """
+    # Convert list of command lists into a single shell string: "cmd1 arg1 && cmd2 arg2 ..."
+    # Using shlex.quote ensures arguments with spaces are handled correctly
+    shell_cmd = " && ".join(
+        [" ".join([shlex.quote(str(arg)) for arg in cmd]) for cmd in commands]
+    )
+
+    # 1. Try using pkexec
+    if shutil.which("pkexec"):
+        try:
+            cmd = ["pkexec", "sh", "-c", shell_cmd]
+            return subprocess.run(cmd, check=True, capture_output=True, text=True)
+        except FileNotFoundError:
+            pass
+        except subprocess.CalledProcessError as e:
+            raise Exception(f"Failed to execute commands: {e.stderr}")
+
+    # 2. Fallback: Use sudo -S with GUI dialog
+    pwd_dialog = SudoPasswordDialog(app_instance.root if app_instance else None)
+    password = pwd_dialog.result
+    
+    if not password:
+        raise PermissionError("No password provided or cancelled by user.")
+    
+    try:
+        # Run sh -c "..." with sudo -S
+        cmd = ["sudo", "-S", "sh", "-c", shell_cmd]
+        process = subprocess.Popen(
+            cmd, 
+            stdin=subprocess.PIPE, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        stdout, stderr = process.communicate(input=password + '\n')
+        
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, cmd, output=stdout, stderr=stderr)
+            
+        return subprocess.CompletedProcess(args=cmd, returncode=process.returncode, stdout=stdout, stderr=stderr)
+        
+    except subprocess.CalledProcessError as e:
+        if "sorry, try again" in e.stderr.lower():
+            raise PermissionError("Incorrect password provided.")
+        raise e
+
+
 # --- GUI ---
+
 class SettingsWindow(tk.Toplevel):
     def __init__(self, parent, app_instance):
         super().__init__(parent)
@@ -165,7 +278,6 @@ class SettingsWindow(tk.Toplevel):
         self.autostart_var = tk.BooleanVar(value=self.is_autostart_enabled())
         self.close_to_background_var = tk.BooleanVar(value=CLOSE_TO_BACKGROUND)
 
-        # Store initial values to check for changes
         self._initial_throttle_max = ABS_THROTTLE_MAX
         self._initial_autostart = self.is_autostart_enabled()
         self._initial_close_to_background = CLOSE_TO_BACKGROUND
@@ -211,34 +323,47 @@ class SettingsWindow(tk.Toplevel):
                 settings_changed = True
 
             if new_autostart != self._initial_autostart:
-                self.handle_autostart()
-                settings_changed = True
+                try:
+                    self.handle_autostart(new_autostart)
+                    settings_changed = True
+                except Exception as e:
+                    messagebox.showerror("Autostart Error", str(e))
+                    self.autostart_var.set(self._initial_autostart)
+                    return
 
             if settings_changed:
                 save_config()
                 messagebox.showinfo("Settings Saved", "Your settings have been saved.")
+                self.destroy()
             else:
                 messagebox.showinfo("No Changes", "No settings were changed.")
-            self.destroy()
+                
         except tk.TclError:
             messagebox.showerror("Invalid Input", "Please enter a valid number for the max throttle value.")
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Please enter a valid number.")
 
     def is_autostart_enabled(self):
         return os.path.exists(f"/etc/systemd/system/handbrake_mapper.service")
 
-    def handle_autostart(self):
-        if self.autostart_var.get():
+    def handle_autostart(self, enable):
+        if enable:
             self.enable_autostart()
         else:
             self.disable_autostart()
 
     def enable_autostart(self):
+        if getattr(sys, 'frozen', False):
+            exe_path = sys.executable
+        else:
+            exe_path = os.path.abspath(sys.argv[0])
+            
         service_content = f"""[Unit]
 Description=Handbrake Joystick Mapper Background Service
 After=network.target
 
 [Service]
-ExecStart=/opt/handbrake_mapper/dist/handbrake_gui --background
+ExecStart={exe_path} --background
 Restart=always
 User=root
 
@@ -248,46 +373,55 @@ WantedBy=multi-user.target
         try:
             with open("/tmp/handbrake_mapper.service", "w") as f:
                 f.write(service_content)
-            subprocess.run(["sudo", "mv", "/tmp/handbrake_mapper.service", "/etc/systemd/system/handbrake_mapper.service"], check=True, capture_output=True, text=True)
-            subprocess.run(["sudo", "systemctl", "enable", "handbrake_mapper.service"], check=True, capture_output=True, text=True)
-            subprocess.run(["sudo", "systemctl", "start", "handbrake_mapper.service"], check=True, capture_output=True, text=True)
-            messagebox.showinfo("Autostart Enabled", "The application will now start automatically with the system.")
-        except subprocess.CalledProcessError as e:
-            messagebox.showerror("Error", f"Failed to enable autostart. Error: {e.stderr}")
+            
+            # Batch all commands into one root call
+            run_commands_as_root([
+                ["mv", "/tmp/handbrake_mapper.service", "/etc/systemd/system/handbrake_mapper.service"],
+                ["systemctl", "daemon-reload"],
+                ["systemctl", "enable", "handbrake_mapper.service"],
+                ["systemctl", "restart", "handbrake_mapper.service"]
+            ])
+            
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to enable autostart: {e}")
+            raise Exception(f"Failed to enable autostart: {e}")
 
     def disable_autostart(self):
         try:
-            subprocess.run(["sudo", "systemctl", "stop", "handbrake_mapper.service"], check=True, capture_output=True, text=True)
-            subprocess.run(["sudo", "systemctl", "disable", "handbrake_mapper.service"], check=True, capture_output=True, text=True)
-            subprocess.run(["sudo", "rm", "/etc/systemd/system/handbrake_mapper.service"], check=True, capture_output=True, text=True)
-            messagebox.showinfo("Autostart Disabled", "The application will no longer start automatically with the system.")
-        except subprocess.CalledProcessError as e:
-            messagebox.showerror("Error", f"Failed to disable autostart. Error: {e.stderr}")
+            # Batch all commands into one root call
+            # We use '|| true' on rm so it doesn't fail if the file doesn't exist
+            run_commands_as_root([
+                ["systemctl", "stop", "handbrake_mapper.service"],
+                ["systemctl", "disable", "handbrake_mapper.service"],
+                ["sh", "-c", "rm -f /etc/systemd/system/handbrake_mapper.service || true"],
+                ["systemctl", "daemon-reload"]
+            ])
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to disable autostart: {e}")
+            raise Exception(f"Failed to disable autostart: {e}")
 
     def automate_setup(self):
         try:
-            # Step 2: Add udev rules
+            # Batch Udev Rules setup
             udev_rule_content = 'SUBSYSTEM=="usb", ENV{ID_VENDOR_ID}=="1021", ENV{ID_MODEL_ID}=="1888", RUN+="/bin/sh -c \'echo 1021 1888 > /sys/bus/usb/drivers/usbhid/new_id\'"'
             with open("/tmp/handbrake_mapper_udev.rules", "w") as f:
                 f.write(udev_rule_content)
-            subprocess.run(["sudo", "mv", "/tmp/handbrake_mapper_udev.rules", "/etc/udev/rules.d/99-handbrake.rules"], check=True, capture_output=True, text=True)
-            subprocess.run(["sudo", "udevadm", "control", "--reload-rules"], check=True, capture_output=True, text=True)
-            subprocess.run(["sudo", "udevadm", "trigger"], check=True, capture_output=True, text=True)
+            
+            run_commands_as_root([
+                ["mv", "/tmp/handbrake_mapper_udev.rules", "/etc/udev/rules.d/99-handbrake.rules"],
+                ["udevadm", "control", "--reload-rules"],
+                ["udevadm", "trigger"]
+            ])
+            
             messagebox.showinfo("Udev Rules", "Udev rules applied successfully. You may need to replug your handbrake.")
 
-            # Step 3: Fix permissions
+            # Batch Permissions setup
             current_user = os.getlogin()
-            subprocess.run(["sudo", "usermod", "-aG", "input", current_user], check=True, capture_output=True, text=True)
+            run_commands_as_root([
+                ["usermod", "-aG", "input", current_user]
+            ])
             messagebox.showinfo("Permissions", "Permissions fixed successfully. Please log out and log back in for changes to take effect.")
 
-        except subprocess.CalledProcessError as e:
-            messagebox.showerror("Error", f"Failed to automate setup. Error: {e.stderr}")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to automate setup: {e}")
+            messagebox.showerror("Error", f"Failed to automate setup. Error: {e}")
 
 
 class HandbrakeApp:
@@ -367,7 +501,7 @@ class HandbrakeApp:
 
     def on_closing(self):
         if CLOSE_TO_BACKGROUND:
-            self.root.withdraw()  # Hide the window
+            self.root.withdraw()
         else:
             self.stop_mapping()
             self.root.destroy()
